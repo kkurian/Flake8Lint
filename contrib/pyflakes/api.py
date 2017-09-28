@@ -5,12 +5,16 @@ from __future__ import with_statement
 
 import sys
 import os
+import re
 import _ast
 
 from pyflakes import checker, __version__
 from pyflakes import reporter as modReporter
 
 __all__ = ['check', 'checkPath', 'checkRecursive', 'iterSourceCode', 'main']
+
+
+PYTHON_SHEBANG_REGEX = re.compile(br'^#!.*\bpython[23w]?\b\s*$')
 
 
 def check(codeString, filename, reporter=None):
@@ -40,6 +44,18 @@ def check(codeString, filename, reporter=None):
         msg = value.args[0]
 
         (lineno, offset, text) = value.lineno, value.offset, value.text
+
+        if checker.PYPY:
+            if text is None:
+                lines = codeString.splitlines()
+                if len(lines) >= lineno:
+                    text = lines[lineno - 1]
+                    if sys.version_info >= (3, ) and isinstance(text, bytes):
+                        try:
+                            text = text.decode('ascii')
+                        except UnicodeDecodeError:
+                            text = None
+            offset -= 1
 
         # If there's an encoding problem with the file, the text is None.
         if text is None:
@@ -96,6 +112,25 @@ def checkPath(filename, reporter=None):
     return check(codestr, filename, reporter)
 
 
+def isPythonFile(filename):
+    """Return True if filename points to a Python file."""
+    if filename.endswith('.py'):
+        return True
+
+    max_bytes = 128
+
+    try:
+        with open(filename, 'rb') as f:
+            text = f.read(max_bytes)
+            if not text:
+                return False
+    except IOError:
+        return False
+
+    first_line = text.splitlines()[0]
+    return PYTHON_SHEBANG_REGEX.match(first_line)
+
+
 def iterSourceCode(paths):
     """
     Iterate over all Python source files in C{paths}.
@@ -108,8 +143,9 @@ def iterSourceCode(paths):
         if os.path.isdir(path):
             for dirpath, dirnames, filenames in os.walk(path):
                 for filename in filenames:
-                    if filename.endswith('.py'):
-                        yield os.path.join(dirpath, filename)
+                    full_path = os.path.join(dirpath, filename)
+                    if isPythonFile(full_path):
+                        yield full_path
         else:
             yield path
 
@@ -157,7 +193,7 @@ def _exitOnSignal(sigName, message):
         pass
 
 
-def main(prog=None):
+def main(prog=None, args=None):
     """Entry point for the script "pyflakes"."""
     import optparse
 
@@ -166,7 +202,7 @@ def main(prog=None):
     _exitOnSignal('SIGPIPE', 1)
 
     parser = optparse.OptionParser(prog=prog, version=__version__)
-    (__, args) = parser.parse_args()
+    (__, args) = parser.parse_args(args=args)
     reporter = modReporter._makeDefaultReporter()
     if args:
         warnings = checkRecursive(args, reporter)
